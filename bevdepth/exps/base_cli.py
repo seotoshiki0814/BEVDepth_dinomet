@@ -36,7 +36,7 @@ def run_cli(model_class=BEVDepthLightningModel,
     parser.set_defaults(profiler='simple',
                         deterministic=False,
                         max_epochs=extra_trainer_config_args.get('epochs', 24),
-                        accelerator='ddp',
+    
                         num_sanity_val_steps=0,
                         gradient_clip_val=5,
                         limit_val_batches=0,
@@ -44,6 +44,10 @@ def run_cli(model_class=BEVDepthLightningModel,
                         precision=16,
                         default_root_dir=os.path.join('./outputs/', exp_name))
     args = parser.parse_args()
+    if args.gpus is not None and args.gpus > 1:
+        args.accelerator = 'ddp'
+    else:
+        args.accelerator = None
     if args.seed is not None:
         pl.seed_everything(args.seed)
 

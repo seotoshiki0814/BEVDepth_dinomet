@@ -1,0 +1,187 @@
+【dockerfile】
+D:\
+├─ BEVDepth-src\
+│  └─ BEVDepth/
+│
+├─ mmdetection3d-src\
+│  └─ mmdetection3d/
+│
+├─ datasets\
+│  └─ nuscenes\
+│
+└─ bevdepth\
+   └─ workspace\
+
+docker run --gpus all -it --shm-size=16g `
+  -v D:\BEVDepth-src:/workspace/BEVDepth `
+  -v D:\mmdetection3d-src:/workspace/mmdetection3d `
+  -v D:\datasets\nuscenes:/workspace/BEVDepth/data/nuScenes `
+  -v D:\bevdepth:/workspace/BEVDepth/workspace `
+  bevdepth:official-cu111
+
+
+
+
+| | RTX 3060 12GB | RTX 6000 Ada 48GB |
+|---|---:|---:|
+| 用途 | デバッグ・小規模実験 | 本学習 |
+| GPU | 1枚 | 1～2枚 |
+| Batch/GPU | 1 | 4～8程度 |
+| AMP | ON | ON |
+| image | `bevdepth:official-cu111` | 同じ |
+| Dataset | nuScenes mini / full | full |
+| 解像度 | 256×704 | 256×704 |
+| Backbone | R50 | R50 |
+| Docker | 共通 | 共通 |
+
+【ディレクトリ構成】
+D:\
+├─ BEVDepth-src\
+│  └─ BEVDepth/
+│
+├─ datasets\
+│  └─ nuscenes\
+│     ├─ maps
+│     ├─ samples
+│     ├─ sweeps
+│     ├─ v1.0-mini
+│     └─ v1.0-trainval
+│
+└─ bevdepth\
+   ├─ workspace\
+   └─ docker\
+
+【Docker image】
+bevdepth:official-cu111
+
+【Version関係性】
+python -c "import torch; print(torch.__version__); print(torch.version.cuda); print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0))"
+1.9.0
+11.1
+True
+NVIDIA GeForce RTX 3060
+
+又は
+
+1.9.0
+11.1
+True
+NVIDIA RTX 6000 Ada Generation
+
+【事前準備】
+・voxel_pooling_train_ext と voxel_pooling_inference_ext というCUDA extensionをコンパイル
+cd /workspace/BEVDepth
+
+python setup.py develop
+
+python -c "import bevdepth"
+
+・import動作確認
+python -c "from bevdepth.ops.voxel_pooling_train import voxel_pooling_train_ext; print('train OK')"
+python -c "from bevdepth.ops.voxel_pooling_inference import voxel_pooling_inference_ext; print('inference OK')"
+
+・MMCV1.5.0が古すぎて現在のBEVDepth環境のMMDetection3Dが要求する1.5.2-1.7.0に入っていない。そおため、MMCVのバージョンを1.5.2へと引き上げつつMMSegが求めるバージョン1.5.0未満を書き換える
+関係性は以下
+PyTorch   1.9.0+cu111
+CUDA      11.1
+MMCV      1.5.2
+MMDetection3D → MMCV >=1.5.2
+MMSeg     → MMCV <=1.5.0
+
+・現在のmmsegバージョン確認
+pip show mmsegmentation
+
+・mmsegの__init__.py確認
+sed -n '45,65p' /opt/conda/envs/bevdepth/lib/python3.7/site-packages/mmseg/__init__.py
+
+・おそらく以下のようになっている
+root@12a774ec5b38:/workspace/BEVDepth# sed -n '45,65p' /opt/conda/envs/bevdepth/lib/python3.7/site-packages/mmseg/__init__.py
+
+    elif version.is_postrelease:
+        release.extend([1, version.post])
+    else:
+        release.extend([0, 0])
+    return tuple(release)
+
+
+mmcv_min_version = digit_version(MMCV_MIN)
+mmcv_max_version = digit_version(MMCV_MAX)
+mmcv_version = digit_version(mmcv.__version__)
+
+・MMCVのバージョン上下限確認
+grep -n "MMCV_" /opt/conda/envs/bevdepth/lib/python3.7/site-packages/mmseg/__init__.py
+
+・おそらく以下のようになっている
+assert (mmcv_min_version <= mmcv_version <= mmcv_max_version), \
+    f'MMCV=={mmcv.__version__} is used but incompatible. ' \
+    f'Please install mmcv>={mmcv_min_version}, <={mmcv_max_version}.'
+
+__all__ = ['__version__', 'version_info', 'digit_version']
+root@12a774ec5b38:/workspace/BEVDepth#
+
+root@12a774ec5b38:/workspace/BEVDepth# grep -n "MMCV_" /opt/conda/envs/bevdepth/lib/python3.7/site-packages/mmseg/__init__.py
+9:MMCV_MIN = '1.3.13'
+10:MMCV_MAX = '1.5.0'
+53:mmcv_min_version = digit_version(MMCV_MIN)
+54:mmcv_max_version = digit_version(MMCV_MAX)
+root@12a774ec5b38:/workspace/BEVDepth#
+
+・MMCV_MAXを変更
+sed -i "s/MMCV_MAX = '1.5.0'/MMCV_MAX = '1.5.2'/" \
+/opt/conda/envs/bevdepth/lib/python3.7/site-packages/mmseg/__init__.py
+
+・以下コマンド入力し、MMCV_MAXが1.5.2になっていればOK
+grep -n "MMCV_" /opt/conda/envs/bevdepth/lib/python3.7/site-packages/mmseg/__init__.py
+
+9:MMCV_MIN = '1.3.13'
+10:MMCV_MAX = '1.5.2'
+
+・初期状態だとGPU 1枚でもDDP/NCCLを起動する構成のため、base_cli.pyのaccelaratorのデフォルトを消去してargperseに追加
+↓みたいにする
+args = parser.parse_args()
+
+if args.gpus is not None and args.gpus > 1:
+    args.accelerator = 'ddp'
+else:
+    args.accelerator = None
+
+・以下コマンドでDDB/NCCLの初期値変更
+cd /workspace/BEVDepth
+
+sed -i "s/                    accelerator='ddp',//" \
+  bevdepth/exps/base_cli.py
+
+sed -i "/args = parser.parse_args()/a\\
+    if args.gpus is not None and args.gpus > 1:\\
+        args.accelerator = 'ddp'\\
+    else:\\
+        args.accelerator = None" \
+  bevdepth/exps/base_cli.py
+
+・すべて完了したら10iterationで確認
+python bevdepth/exps/nuscenes/mv/bev_depth_lss_r50_256x704_128x128_24e_2key.py \
+    -b 1 \
+    --gpus 1 \
+    --max_epochs 1 \
+    --limit_train_batches 10 \
+    --amp_backend native
+
+
+
+root@12a774ec5b38:/workspace/BEVDepth# grep -R "def predict_step" -n bevdepth
+
+bevdepth/exps/nuscenes/base_exp.py:467:    def predict_step(self, batch, batch_idx):
+root@12a774ec5b38:/workspace/BEVDepth# grep -R "_format_bbox" -n bevdepth
+bevdepth/evaluators/det_evaluators.py:165:                    self._format_bbox(results, img_metas, self.output_dir)
+bevdepth/evaluators/det_evaluators.py:170:                    self._format_bbox(results, img_metas, tmp_file_)
+bevdepth/evaluators/det_evaluators.py:219:    def _format_bbox(self, results, img_metas, jsonfile_prefix=None):
+Binary file bevdepth/evaluators/__pycache__/det_evaluators.cpython-37.pyc matches
+bevdepth/exps/base_cli.py:79:        model.evaluator._format_bbox(all_pred_results, all_img_metas,
+Binary file bevdepth/exps/__pycache__/base_cli.cpython-37.pyc matches
+root@12a774ec5b38:/workspace/BEVDepth# grep -R "visual" -n bevdepth
+bevdepth/evaluators/det_evaluators.py:196:            show (bool): Whether to visualize.
+bevdepth/evaluators/det_evaluators.py:198:            out_dir (str): Path to save the visualization results.
+Binary file bevdepth/evaluators/__pycache__/det_evaluators.cpython-37.pyc matches
+root@12a774ec5b38:/workspace/BEVDepth#
+
+

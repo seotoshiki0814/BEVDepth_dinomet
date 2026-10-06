@@ -1,4 +1,5 @@
 # Copyright (c) Megvii Inc. All rights reserved.
+import time
 import os
 from functools import partial
 
@@ -198,6 +199,10 @@ class BEVDepthLightningModel(LightningModule):
                  default_root_dir='./outputs/',
                  **kwargs):
         super().__init__()
+
+        self.iter_start_time = None
+        self.iter_times = []
+
         self.save_hyperparameters()
         self.gpus = gpus
         self.eval_interval = eval_interval
@@ -465,3 +470,41 @@ class BEVDepthLightningModel(LightningModule):
     @staticmethod
     def add_model_specific_args(parent_parser):  # pragma: no-cover
         return parent_parser
+
+def on_train_batch_start(self, batch, batch_idx):
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+
+    self.iter_start_time = time.perf_counter()
+
+
+def on_train_batch_end(self, outputs, batch, batch_idx):
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+
+    elapsed = time.perf_counter() - self.iter_start_time
+
+    # 最初の5 iterationはウォームアップとして捨てる
+    if batch_idx >= 5:
+        self.iter_times.append(elapsed)
+
+    if batch_idx < 10:
+        print(
+            f"[ITER TIME] "
+            f"epoch={self.current_epoch} "
+            f"batch={batch_idx} "
+            f"time={elapsed:.3f} sec"
+        )
+
+def on_train_epoch_end(self):
+    if len(self.iter_times) > 0:
+        avg = sum(self.iter_times) / len(self.iter_times)
+
+        print(
+            f"\n===== ITERATION TIME =====\n"
+            f"average = {avg:.3f} sec/iter\n"
+            f"iter/min = {60.0 / avg:.2f}\n"
+            f"==========================\n"
+        )
+
+        self.iter_times.clear()
