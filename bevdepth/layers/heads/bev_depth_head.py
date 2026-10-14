@@ -1,13 +1,13 @@
+from mmdet.registry import MODELS as MMDET_MODELS
 """Inherited from `https://github.com/open-mmlab/mmdetection3d/blob/master/mmdet3d/models/dense_heads/centerpoint_head.py`"""  # noqa
 import numba
 import numpy as np
 import torch
-from mmdet3d.core import draw_heatmap_gaussian, gaussian_radius
-from mmdet3d.models import build_neck
+from mmdet3d.models.utils import draw_heatmap_gaussian, gaussian_radius
+from mmdet3d.registry import MODELS
 from mmdet3d.models.dense_heads.centerpoint_head import CenterHead, circle_nms
 from mmdet3d.models.utils import clip_sigmoid
-from mmdet.core import reduce_mean
-from mmdet.models import build_backbone
+from mmdet.utils import reduce_mean
 from torch.cuda.amp import autocast
 
 __all__ = ['BEVDepthHead']
@@ -106,8 +106,8 @@ class BEVDepthHead(CenterHead):
         tasks=None,
         bbox_coder=None,
         common_heads=dict(),
-        loss_cls=dict(type='GaussianFocalLoss', reduction='mean'),
-        loss_bbox=dict(type='L1Loss', reduction='mean', loss_weight=0.25),
+        loss_cls=dict(type='mmdet.GaussianFocalLoss', reduction='mean'),
+        loss_bbox=dict(type='mmdet.L1Loss', reduction='mean', loss_weight=0.25),
         gaussian_overlap=0.1,
         min_radius=2,
         train_cfg=None,
@@ -127,9 +127,9 @@ class BEVDepthHead(CenterHead):
             loss_bbox=loss_bbox,
             separate_head=separate_head,
         )
-        self.trunk = build_backbone(bev_backbone_conf)
+        self.trunk = MMDET_MODELS.build(bev_backbone_conf)
         self.trunk.init_weights()
-        self.neck = build_neck(bev_neck_conf)
+        self.neck = MODELS.build(bev_neck_conf)
         self.neck.init_weights()
         del self.trunk.maxpool
         self.gaussian_overlap = gaussian_overlap
@@ -165,6 +165,35 @@ class BEVDepthHead(CenterHead):
         fpn_output = self.neck(trunk_outs)
         ret_values = super().forward(fpn_output)
         return ret_values
+
+    def get_targets(self, gt_bboxes_3d, gt_labels_3d):
+        """Generate BEVDepth targets using the legacy API."""
+        from mmdet.models.utils import multi_apply
+
+        heatmaps, anno_boxes, inds, masks = multi_apply(
+            self.get_targets_single,
+            gt_bboxes_3d,
+            gt_labels_3d,
+        )
+
+        heatmaps = [
+            torch.stack(items)
+            for items in zip(*heatmaps)
+        ]
+        anno_boxes = [
+            torch.stack(items)
+            for items in zip(*anno_boxes)
+        ]
+        inds = [
+            torch.stack(items)
+            for items in zip(*inds)
+        ]
+        masks = [
+            torch.stack(items)
+            for items in zip(*masks)
+        ]
+
+        return heatmaps, anno_boxes, inds, masks
 
     def get_targets_single(self, gt_bboxes_3d, gt_labels_3d):
         """Generate training targets for a single sample.

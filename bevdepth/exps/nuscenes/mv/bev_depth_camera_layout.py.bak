@@ -1,0 +1,29 @@
+"""
+Camera Layout Generalization Experiment
+
+Phase 1: BEVDepth + ResNet50
+Phase 2: BEVDepth + DINOv3 (frozen)
+Phase 3: Camera layout variation experiments
+"""
+
+from bevdepth.exps.nuscenes.base_exp import (
+    BEVDepthLightningModel as BaseBEVDepthLightningModel,
+)
+from bevdepth.exps.base_cli import run_cli
+
+
+class BEVDepthLightningModel(BaseBEVDepthLightningModel):
+    """Camera-layout research baseline."""
+
+    # Lightning 2.xではvalidation_epoch_endが廃止されている
+    validation_epoch_end = None
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+
+if __name__ == "__main__":
+    run_cli(
+        BEVDepthLightningModel,
+        "bev_depth_camera_layout",
+    )

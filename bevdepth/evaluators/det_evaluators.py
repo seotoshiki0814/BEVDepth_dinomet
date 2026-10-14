@@ -1,3 +1,4 @@
+import mmengine
 '''Modified from # https://github.com/nutonomy/nuscenes-devkit/blob/57889ff20678577025326cfc24e57424a829be0a/python-sdk/nuscenes/eval/detection/evaluate.py#L222 # noqa
 '''
 import os.path as osp
@@ -96,7 +97,7 @@ class DetNuscEvaluator():
         nusc_eval.main(render_curves=False)
 
         # record metrics
-        metrics = mmcv.load(osp.join(output_dir, 'metrics_summary.json'))
+        metrics = mmengine.load(osp.join(output_dir, 'metrics_summary.json'))
         detail = dict()
         metric_prefix = f'{result_name}_NuScenes'
         for class_name in self.class_names:
@@ -233,7 +234,7 @@ class DetNuscEvaluator():
 
         print('Start to convert detection format...')
 
-        for sample_id, det in enumerate(mmcv.track_iter_progress(results)):
+        for sample_id, det in enumerate(mmengine.track_iter_progress(results)):
             boxes, scores, labels = det
             boxes = boxes
             sample_token = img_metas[sample_id]['token']
@@ -292,8 +293,8 @@ class DetNuscEvaluator():
             'meta': self.modality,
             'results': nusc_annos,
         }
-        mmcv.mkdir_or_exist(jsonfile_prefix)
+        mmengine.mkdir_or_exist(jsonfile_prefix)
         res_path = osp.join(jsonfile_prefix, 'results_nusc.json')
         print('Results writes to', res_path)
-        mmcv.dump(nusc_submissions, res_path)
+        mmengine.dump(nusc_submissions, res_path)
         return res_path

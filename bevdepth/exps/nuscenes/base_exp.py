@@ -1,3 +1,4 @@
+import mmengine
 # Copyright (c) Megvii Inc. All rights reserved.
 import time
 import os
@@ -174,11 +175,19 @@ head_conf = {
     'train_cfg': train_cfg,
     'test_cfg': test_cfg,
     'in_channels': 256,  # Equal to bev_neck output_channels.
-    'loss_cls': dict(type='GaussianFocalLoss', reduction='mean'),
-    'loss_bbox': dict(type='L1Loss', reduction='mean', loss_weight=0.25),
+    'loss_cls': dict(type='mmdet.GaussianFocalLoss', reduction='mean'),
+    'loss_bbox': dict(type='mmdet.L1Loss', reduction='mean', loss_weight=0.25),
     'gaussian_overlap': 0.1,
     'min_radius': 2,
 }
+
+
+
+from mmdet.utils import register_all_modules as register_mmdet_modules
+from mmdet3d.utils import register_all_modules as register_mmdet3d_modules
+
+register_mmdet_modules(init_default_scope=False)
+register_mmdet3d_modules(init_default_scope=False)
 
 
 class BEVDepthLightningModel(LightningModule):
@@ -214,7 +223,7 @@ class BEVDepthLightningModel(LightningModule):
         self.head_conf = head_conf
         self.ida_aug_conf = ida_aug_conf
         self.bda_aug_conf = bda_aug_conf
-        mmcv.mkdir_or_exist(default_root_dir)
+        mmengine.mkdir_or_exist(default_root_dir)
         self.default_root_dir = default_root_dir
         self.evaluator = DetNuscEvaluator(class_names=self.class_names,
                                           output_dir=self.default_root_dir)

@@ -1,9 +1,10 @@
+from mmcv.ops import DeformConv2dPack
+from mmdet.registry import MODELS as MMDET_MODELS
 # Copyright (c) Megvii Inc. All rights reserved.
 import torch
 import torch.nn.functional as F
 from mmcv.cnn import build_conv_layer
-from mmdet3d.models import build_neck
-from mmdet.models import build_backbone
+from mmdet3d.registry import MODELS
 from mmdet.models.backbones.resnet import BasicBlock
 from torch import nn
 from torch.cuda.amp.autocast_mode import autocast
@@ -194,15 +195,14 @@ class DepthNet(nn.Module):
             BasicBlock(mid_channels, mid_channels),
             BasicBlock(mid_channels, mid_channels),
             ASPP(mid_channels, mid_channels),
-            build_conv_layer(cfg=dict(
-                type='DCN',
+            DeformConv2dPack(
                 in_channels=mid_channels,
                 out_channels=mid_channels,
                 kernel_size=3,
                 padding=1,
                 groups=4,
                 im2col_step=128,
-            )),
+            ),
             nn.Conv2d(mid_channels,
                       depth_channels,
                       kernel_size=1,
@@ -364,8 +364,8 @@ class BaseLSSFPN(nn.Module):
         self.register_buffer('frustum', self.create_frustum())
         self.depth_channels, _, _, _ = self.frustum.shape
 
-        self.img_backbone = build_backbone(img_backbone_conf)
-        self.img_neck = build_neck(img_neck_conf)
+        self.img_backbone = MMDET_MODELS.build(img_backbone_conf)
+        self.img_neck = MODELS.build(img_neck_conf)
         self.depth_net = self._configure_depth_net(depth_net_conf)
 
         self.img_neck.init_weights()

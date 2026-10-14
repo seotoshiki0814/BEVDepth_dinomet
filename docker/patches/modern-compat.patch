@@ -1,0 +1,629 @@
+diff --git a/bevdepth/datasets/nusc_det_dataset.py b/bevdepth/datasets/nusc_det_dataset.py
+index 43e73d8..1791508 100644
+--- a/bevdepth/datasets/nusc_det_dataset.py
++++ b/bevdepth/datasets/nusc_det_dataset.py
+@@ -1,9 +1,10 @@
++import mmengine
+ import os
+ 
+ import mmcv
+ import numpy as np
+ import torch
+-from mmdet3d.core.bbox.structures.lidar_box3d import LiDARInstance3DBoxes
++from mmdet3d.structures import LiDARInstance3DBoxes
+ from nuscenes.utils.data_classes import Box, LidarPointCloud
+ from nuscenes.utils.geometry_utils import view_points
+ from PIL import Image
+@@ -255,9 +256,9 @@ class NuscDetDataset(Dataset):
+         if isinstance(info_paths, list):
+             self.infos = list()
+             for info_path in info_paths:
+-                self.infos.extend(mmcv.load(info_path))
++                self.infos.extend(mmengine.load(info_path))
+         else:
+-            self.infos = mmcv.load(info_paths)
++            self.infos = mmengine.load(info_paths)
+         self.is_train = is_train
+         self.ida_aug_conf = ida_aug_conf
+         self.bda_aug_conf = bda_aug_conf
+diff --git a/bevdepth/evaluators/det_evaluators.py b/bevdepth/evaluators/det_evaluators.py
+index 1a4c4c5..d2b0c74 100644
+--- a/bevdepth/evaluators/det_evaluators.py
++++ b/bevdepth/evaluators/det_evaluators.py
+@@ -1,3 +1,4 @@
++import mmengine
+ '''Modified from # https://github.com/nutonomy/nuscenes-devkit/blob/57889ff20678577025326cfc24e57424a829be0a/python-sdk/nuscenes/eval/detection/evaluate.py#L222 # noqa
+ '''
+ import os.path as osp
+@@ -96,7 +97,7 @@ class DetNuscEvaluator():
+         nusc_eval.main(render_curves=False)
+ 
+         # record metrics
+-        metrics = mmcv.load(osp.join(output_dir, 'metrics_summary.json'))
++        metrics = mmengine.load(osp.join(output_dir, 'metrics_summary.json'))
+         detail = dict()
+         metric_prefix = f'{result_name}_NuScenes'
+         for class_name in self.class_names:
+@@ -233,7 +234,7 @@ class DetNuscEvaluator():
+ 
+         print('Start to convert detection format...')
+ 
+-        for sample_id, det in enumerate(mmcv.track_iter_progress(results)):
++        for sample_id, det in enumerate(mmengine.track_iter_progress(results)):
+             boxes, scores, labels = det
+             boxes = boxes
+             sample_token = img_metas[sample_id]['token']
+@@ -292,8 +293,8 @@ class DetNuscEvaluator():
+             'meta': self.modality,
+             'results': nusc_annos,
+         }
+-        mmcv.mkdir_or_exist(jsonfile_prefix)
++        mmengine.mkdir_or_exist(jsonfile_prefix)
+         res_path = osp.join(jsonfile_prefix, 'results_nusc.json')
+         print('Results writes to', res_path)
+-        mmcv.dump(nusc_submissions, res_path)
++        mmengine.dump(nusc_submissions, res_path)
+         return res_path
+diff --git a/bevdepth/exps/base_cli.py b/bevdepth/exps/base_cli.py
+index 710e2e6..6aa8c98 100644
+--- a/bevdepth/exps/base_cli.py
++++ b/bevdepth/exps/base_cli.py
+@@ -1,5 +1,6 @@
+ # Copyright (c) Megvii Inc. All rights reserved.
+ import os
++import inspect
+ from argparse import ArgumentParser
+ 
+ import pytorch_lightning as pl
+@@ -13,70 +14,110 @@ from .nuscenes.base_exp import BEVDepthLightningModel
+ def run_cli(model_class=BEVDepthLightningModel,
+             exp_name='base_exp',
+             use_ema=False,
+-            extra_trainer_config_args={}):
+-    parent_parser = ArgumentParser(add_help=False)
+-    parent_parser = pl.Trainer.add_argparse_args(parent_parser)
+-    parent_parser.add_argument('-e',
+-                               '--evaluate',
+-                               dest='evaluate',
+-                               action='store_true',
+-                               help='evaluate model on validation set')
+-    parent_parser.add_argument('-p',
+-                               '--predict',
+-                               dest='predict',
+-                               action='store_true',
+-                               help='predict model on testing set')
+-    parent_parser.add_argument('-b', '--batch_size_per_device', type=int)
+-    parent_parser.add_argument('--seed',
+-                               type=int,
+-                               default=0,
+-                               help='seed for initializing training.')
+-    parent_parser.add_argument('--ckpt_path', type=str)
+-    parser = BEVDepthLightningModel.add_model_specific_args(parent_parser)
+-    parser.set_defaults(profiler='simple',
+-                        deterministic=False,
+-                        max_epochs=extra_trainer_config_args.get('epochs', 24),
+-    
+-                        num_sanity_val_steps=0,
+-                        gradient_clip_val=5,
+-                        limit_val_batches=0,
+-                        enable_checkpointing=True,
+-                        precision=16,
+-                        default_root_dir=os.path.join('./outputs/', exp_name))
++            extra_trainer_config_args=None):
++
++    extra_trainer_config_args = extra_trainer_config_args or {}
++
++    parser = ArgumentParser(add_help=True)
++
++    # BEVDepth-specific arguments
++    parser.add_argument('-e', '--evaluate', action='store_true')
++    parser.add_argument('-p', '--predict', action='store_true')
++    parser.add_argument('-b', '--batch_size_per_device', type=int)
++    parser.add_argument('--seed', type=int, default=0)
++    parser.add_argument('--ckpt_path', type=str)
++
++    # Common Lightning Trainer arguments
++    parser.add_argument('--gpus', type=int, default=1)
++    parser.add_argument('--devices', type=int, default=None)
++    parser.add_argument('--accelerator', type=str, default=None)
++    parser.add_argument('--strategy', type=str, default='auto')
++    parser.add_argument('--max_epochs', type=int,
++                        default=extra_trainer_config_args.get('epochs', 24))
++    parser.add_argument('--limit_train_batches', type=float, default=1.0)
++    parser.add_argument('--limit_val_batches', type=float, default=0.0)
++    parser.add_argument('--num_sanity_val_steps', type=int, default=0)
++    parser.add_argument('--gradient_clip_val', type=float, default=5.0)
++    parser.add_argument('--precision', type=str, default='16-mixed')
++    parser.add_argument('--profiler', type=str, default='simple')
++    parser.add_argument('--deterministic', action='store_true')
++    parser.add_argument('--default_root_dir', type=str,
++                        default=os.path.join('./outputs/', exp_name))
++    parser.add_argument('--enable_checkpointing', action='store_true',
++                        default=True)
++    parser.add_argument('--amp_backend', type=str, default='native')
++
++    parser = model_class.add_model_specific_args(parser)
+     args = parser.parse_args()
+-    if args.gpus is not None and args.gpus > 1:
+-        args.accelerator = 'ddp'
+-    else:
+-        args.accelerator = None
++
+     if args.seed is not None:
+         pl.seed_everything(args.seed)
+ 
+     model = model_class(**vars(args))
++
++    # Translate legacy --gpus to Lightning 2.x configuration
++    devices = args.devices if args.devices is not None else args.gpus
++    accelerator = args.accelerator or ('gpu' if devices > 0 else 'cpu')
++
++    trainer_kwargs = dict(
++        accelerator=accelerator,
++        devices=devices if accelerator == 'gpu' else 1,
++        strategy=args.strategy,
++        max_epochs=args.max_epochs,
++        limit_train_batches=args.limit_train_batches,
++        limit_val_batches=args.limit_val_batches,
++        num_sanity_val_steps=args.num_sanity_val_steps,
++        gradient_clip_val=args.gradient_clip_val,
++        precision=args.precision if accelerator == 'gpu' else '32-true',
++        profiler=args.profiler,
++        deterministic=args.deterministic,
++        default_root_dir=args.default_root_dir,
++        enable_checkpointing=args.enable_checkpointing,
++    )
++
++    callbacks = []
+     if use_ema:
+         train_dataloader = model.train_dataloader()
+         ema_callback = EMACallback(
+             len(train_dataloader.dataset) * args.max_epochs)
+-        trainer = pl.Trainer.from_argparse_args(args, callbacks=[ema_callback])
+-    else:
+-        trainer = pl.Trainer.from_argparse_args(args)
++        callbacks.append(ema_callback)
++
++    if callbacks:
++        trainer_kwargs['callbacks'] = callbacks
++
++    trainer = pl.Trainer(**trainer_kwargs)
++
+     if args.evaluate:
+         trainer.test(model, ckpt_path=args.ckpt_path)
++
+     elif args.predict:
+-        predict_step_outputs = trainer.predict(model, ckpt_path=args.ckpt_path)
+-        all_pred_results = list()
+-        all_img_metas = list()
++        predict_step_outputs = trainer.predict(
++            model, ckpt_path=args.ckpt_path)
++
++        all_pred_results = []
++        all_img_metas = []
++
+         for predict_step_output in predict_step_outputs:
+             for i in range(len(predict_step_output)):
+                 all_pred_results.append(predict_step_output[i][:3])
+                 all_img_metas.append(predict_step_output[i][3])
++
+         synchronize()
++
+         len_dataset = len(model.test_dataloader().dataset)
+         all_pred_results = sum(
+             map(list, zip(*all_gather_object(all_pred_results))),
+             [])[:len_dataset]
+-        all_img_metas = sum(map(list, zip(*all_gather_object(all_img_metas))),
+-                            [])[:len_dataset]
+-        model.evaluator._format_bbox(all_pred_results, all_img_metas,
+-                                     os.path.dirname(args.ckpt_path))
++
++        all_img_metas = sum(
++            map(list, zip(*all_gather_object(all_img_metas))),
++            [])[:len_dataset]
++
++        model.evaluator._format_bbox(
++            all_pred_results,
++            all_img_metas,
++            os.path.dirname(args.ckpt_path)
++        )
++
+     else:
+-        trainer.fit(model)
++        trainer.fit(model, ckpt_path=args.ckpt_path)
+diff --git a/bevdepth/exps/nuscenes/base_exp.py b/bevdepth/exps/nuscenes/base_exp.py
+index 66d602f..0c43ba2 100644
+--- a/bevdepth/exps/nuscenes/base_exp.py
++++ b/bevdepth/exps/nuscenes/base_exp.py
+@@ -1,3 +1,4 @@
++import mmengine
+ # Copyright (c) Megvii Inc. All rights reserved.
+ import time
+ import os
+@@ -174,13 +175,21 @@ head_conf = {
+     'train_cfg': train_cfg,
+     'test_cfg': test_cfg,
+     'in_channels': 256,  # Equal to bev_neck output_channels.
+-    'loss_cls': dict(type='GaussianFocalLoss', reduction='mean'),
+-    'loss_bbox': dict(type='L1Loss', reduction='mean', loss_weight=0.25),
++    'loss_cls': dict(type='mmdet.GaussianFocalLoss', reduction='mean'),
++    'loss_bbox': dict(type='mmdet.L1Loss', reduction='mean', loss_weight=0.25),
+     'gaussian_overlap': 0.1,
+     'min_radius': 2,
+ }
+ 
+ 
++
++from mmdet.utils import register_all_modules as register_mmdet_modules
++from mmdet3d.utils import register_all_modules as register_mmdet3d_modules
++
++register_mmdet_modules(init_default_scope=False)
++register_mmdet3d_modules(init_default_scope=False)
++
++
+ class BEVDepthLightningModel(LightningModule):
+     MODEL_NAMES = sorted(name for name in models.__dict__
+                          if name.islower() and not name.startswith('__')
+@@ -214,7 +223,7 @@ class BEVDepthLightningModel(LightningModule):
+         self.head_conf = head_conf
+         self.ida_aug_conf = ida_aug_conf
+         self.bda_aug_conf = bda_aug_conf
+-        mmcv.mkdir_or_exist(default_root_dir)
++        mmengine.mkdir_or_exist(default_root_dir)
+         self.default_root_dir = default_root_dir
+         self.evaluator = DetNuscEvaluator(class_names=self.class_names,
+                                           output_dir=self.default_root_dir)
+diff --git a/bevdepth/layers/backbones/base_lss_fpn.py b/bevdepth/layers/backbones/base_lss_fpn.py
+index c776334..9f7df95 100644
+--- a/bevdepth/layers/backbones/base_lss_fpn.py
++++ b/bevdepth/layers/backbones/base_lss_fpn.py
+@@ -1,9 +1,10 @@
++from mmcv.ops import DeformConv2dPack
++from mmdet.registry import MODELS as MMDET_MODELS
+ # Copyright (c) Megvii Inc. All rights reserved.
+ import torch
+ import torch.nn.functional as F
+ from mmcv.cnn import build_conv_layer
+-from mmdet3d.models import build_neck
+-from mmdet.models import build_backbone
++from mmdet3d.registry import MODELS
+ from mmdet.models.backbones.resnet import BasicBlock
+ from torch import nn
+ from torch.cuda.amp.autocast_mode import autocast
+@@ -194,15 +195,14 @@ class DepthNet(nn.Module):
+             BasicBlock(mid_channels, mid_channels),
+             BasicBlock(mid_channels, mid_channels),
+             ASPP(mid_channels, mid_channels),
+-            build_conv_layer(cfg=dict(
+-                type='DCN',
++            DeformConv2dPack(
+                 in_channels=mid_channels,
+                 out_channels=mid_channels,
+                 kernel_size=3,
+                 padding=1,
+                 groups=4,
+                 im2col_step=128,
+-            )),
++            ),
+             nn.Conv2d(mid_channels,
+                       depth_channels,
+                       kernel_size=1,
+@@ -364,8 +364,8 @@ class BaseLSSFPN(nn.Module):
+         self.register_buffer('frustum', self.create_frustum())
+         self.depth_channels, _, _, _ = self.frustum.shape
+ 
+-        self.img_backbone = build_backbone(img_backbone_conf)
+-        self.img_neck = build_neck(img_neck_conf)
++        self.img_backbone = MMDET_MODELS.build(img_backbone_conf)
++        self.img_neck = MODELS.build(img_neck_conf)
+         self.depth_net = self._configure_depth_net(depth_net_conf)
+ 
+         self.img_neck.init_weights()
+diff --git a/bevdepth/layers/heads/bev_depth_head.py b/bevdepth/layers/heads/bev_depth_head.py
+index 2cf77d0..53c0071 100644
+--- a/bevdepth/layers/heads/bev_depth_head.py
++++ b/bevdepth/layers/heads/bev_depth_head.py
+@@ -1,13 +1,13 @@
++from mmdet.registry import MODELS as MMDET_MODELS
+ """Inherited from `https://github.com/open-mmlab/mmdetection3d/blob/master/mmdet3d/models/dense_heads/centerpoint_head.py`"""  # noqa
+ import numba
+ import numpy as np
+ import torch
+-from mmdet3d.core import draw_heatmap_gaussian, gaussian_radius
+-from mmdet3d.models import build_neck
++from mmdet3d.models.utils import draw_heatmap_gaussian, gaussian_radius
++from mmdet3d.registry import MODELS
+ from mmdet3d.models.dense_heads.centerpoint_head import CenterHead, circle_nms
+ from mmdet3d.models.utils import clip_sigmoid
+-from mmdet.core import reduce_mean
+-from mmdet.models import build_backbone
++from mmdet.utils import reduce_mean
+ from torch.cuda.amp import autocast
+ 
+ __all__ = ['BEVDepthHead']
+@@ -106,8 +106,8 @@ class BEVDepthHead(CenterHead):
+         tasks=None,
+         bbox_coder=None,
+         common_heads=dict(),
+-        loss_cls=dict(type='GaussianFocalLoss', reduction='mean'),
+-        loss_bbox=dict(type='L1Loss', reduction='mean', loss_weight=0.25),
++        loss_cls=dict(type='mmdet.GaussianFocalLoss', reduction='mean'),
++        loss_bbox=dict(type='mmdet.L1Loss', reduction='mean', loss_weight=0.25),
+         gaussian_overlap=0.1,
+         min_radius=2,
+         train_cfg=None,
+@@ -127,9 +127,9 @@ class BEVDepthHead(CenterHead):
+             loss_bbox=loss_bbox,
+             separate_head=separate_head,
+         )
+-        self.trunk = build_backbone(bev_backbone_conf)
++        self.trunk = MMDET_MODELS.build(bev_backbone_conf)
+         self.trunk.init_weights()
+-        self.neck = build_neck(bev_neck_conf)
++        self.neck = MODELS.build(bev_neck_conf)
+         self.neck.init_weights()
+         del self.trunk.maxpool
+         self.gaussian_overlap = gaussian_overlap
+@@ -166,6 +166,35 @@ class BEVDepthHead(CenterHead):
+         ret_values = super().forward(fpn_output)
+         return ret_values
+ 
++    def get_targets(self, gt_bboxes_3d, gt_labels_3d):
++        """Generate BEVDepth targets using the legacy API."""
++        from mmdet.models.utils import multi_apply
++
++        heatmaps, anno_boxes, inds, masks = multi_apply(
++            self.get_targets_single,
++            gt_bboxes_3d,
++            gt_labels_3d,
++        )
++
++        heatmaps = [
++            torch.stack(items)
++            for items in zip(*heatmaps)
++        ]
++        anno_boxes = [
++            torch.stack(items)
++            for items in zip(*anno_boxes)
++        ]
++        inds = [
++            torch.stack(items)
++            for items in zip(*inds)
++        ]
++        masks = [
++            torch.stack(items)
++            for items in zip(*masks)
++        ]
++
++        return heatmaps, anno_boxes, inds, masks
++
+     def get_targets_single(self, gt_bboxes_3d, gt_labels_3d):
+         """Generate training targets for a single sample.
+ 
+diff --git a/bevdepth/models/base_bev_depth.py b/bevdepth/models/base_bev_depth.py
+index 07e03c6..e114a18 100644
+--- a/bevdepth/models/base_bev_depth.py
++++ b/bevdepth/models/base_bev_depth.py
+@@ -1,111 +1,111 @@
+-from torch import nn
+-
+-from bevdepth.layers.backbones.base_lss_fpn import BaseLSSFPN
+-from bevdepth.layers.heads.bev_depth_head import BEVDepthHead
+-
+-__all__ = ['BaseBEVDepth']
+-
+-
+-class BaseBEVDepth(nn.Module):
+-    """Source code of `BEVDepth`, `https://arxiv.org/abs/2112.11790`.
+-
+-    Args:
+-        backbone_conf (dict): Config of backbone.
+-        head_conf (dict): Config of head.
+-        is_train_depth (bool): Whether to return depth.
+-            Default: False.
+-    """
+-
+-    # TODO: Reduce grid_conf and data_aug_conf
+-    def __init__(self, backbone_conf, head_conf, is_train_depth=False):
+-        super(BaseBEVDepth, self).__init__()
+-        self.backbone = BaseLSSFPN(**backbone_conf)
+-        self.head = BEVDepthHead(**head_conf)
+-        self.is_train_depth = is_train_depth
+-
+-    def forward(
+-        self,
+-        x,
+-        mats_dict,
+-        timestamps=None,
+-    ):
+-        """Forward function for BEVDepth
+-
+-        Args:
+-            x (Tensor): Input ferature map.
+-            mats_dict(dict):
+-                sensor2ego_mats(Tensor): Transformation matrix from
+-                    camera to ego with shape of (B, num_sweeps,
+-                    num_cameras, 4, 4).
+-                intrin_mats(Tensor): Intrinsic matrix with shape
+-                    of (B, num_sweeps, num_cameras, 4, 4).
+-                ida_mats(Tensor): Transformation matrix for ida with
+-                    shape of (B, num_sweeps, num_cameras, 4, 4).
+-                sensor2sensor_mats(Tensor): Transformation matrix
+-                    from key frame camera to sweep frame camera with
+-                    shape of (B, num_sweeps, num_cameras, 4, 4).
+-                bda_mat(Tensor): Rotation matrix for bda with shape
+-                    of (B, 4, 4).
+-            timestamps (long): Timestamp.
+-                Default: None.
+-
+-        Returns:
+-            tuple(list[dict]): Output results for tasks.
+-        """
+-        if self.is_train_depth and self.training:
+-            x, depth_pred = self.backbone(x,
+-                                          mats_dict,
+-                                          timestamps,
+-                                          is_return_depth=True)
+-            preds = self.head(x)
+-            return preds, depth_pred
+-        else:
+-            x = self.backbone(x, mats_dict, timestamps)
+-            preds = self.head(x)
+-            return preds
+-
+-    def get_targets(self, gt_boxes, gt_labels):
+-        """Generate training targets for a single sample.
+-
+-        Args:
+-            gt_bboxes_3d (:obj:`LiDARInstance3DBoxes`): Ground truth gt boxes.
+-            gt_labels_3d (torch.Tensor): Labels of boxes.
+-
+-        Returns:
+-            tuple[list[torch.Tensor]]: Tuple of target including \
+-                the following results in order.
+-
+-                - list[torch.Tensor]: Heatmap scores.
+-                - list[torch.Tensor]: Ground truth boxes.
+-                - list[torch.Tensor]: Indexes indicating the position \
+-                    of the valid boxes.
+-                - list[torch.Tensor]: Masks indicating which boxes \
+-                    are valid.
+-        """
+-        return self.head.get_targets(gt_boxes, gt_labels)
+-
+-    def loss(self, targets, preds_dicts):
+-        """Loss function for BEVDepth.
+-
+-        Args:
+-            gt_bboxes_3d (list[:obj:`LiDARInstance3DBoxes`]): Ground
+-                truth gt boxes.
+-            gt_labels_3d (list[torch.Tensor]): Labels of boxes.
+-            preds_dicts (dict): Output of forward function.
+-
+-        Returns:
+-            dict[str:torch.Tensor]: Loss of heatmap and bbox of each task.
+-        """
+-        return self.head.loss(targets, preds_dicts)
+-
+-    def get_bboxes(self, preds_dicts, img_metas=None, img=None, rescale=False):
+-        """Generate bboxes from bbox head predictions.
+-
+-        Args:
+-            preds_dicts (tuple[list[dict]]): Prediction results.
+-            img_metas (list[dict]): Point cloud and image's meta info.
+-
+-        Returns:
+-            list[dict]: Decoded bbox, scores and labels after nms.
+-        """
+-        return self.head.get_bboxes(preds_dicts, img_metas, img, rescale)
++from torch import nn
++
++from bevdepth.layers.backbones.base_lss_fpn import BaseLSSFPN
++from bevdepth.layers.heads.bev_depth_head import BEVDepthHead
++
++__all__ = ['BaseBEVDepth']
++
++
++class BaseBEVDepth(nn.Module):
++    """Source code of `BEVDepth`, `https://arxiv.org/abs/2112.11790`.
++
++    Args:
++        backbone_conf (dict): Config of backbone.
++        head_conf (dict): Config of head.
++        is_train_depth (bool): Whether to return depth.
++            Default: False.
++    """
++
++    # TODO: Reduce grid_conf and data_aug_conf
++    def __init__(self, backbone_conf, head_conf, is_train_depth=False):
++        super(BaseBEVDepth, self).__init__()
++        self.backbone = BaseLSSFPN(**backbone_conf)
++        self.head = BEVDepthHead(**head_conf)
++        self.is_train_depth = is_train_depth
++
++    def forward(
++        self,
++        x,
++        mats_dict,
++        timestamps=None,
++    ):
++        """Forward function for BEVDepth
++
++        Args:
++            x (Tensor): Input ferature map.
++            mats_dict(dict):
++                sensor2ego_mats(Tensor): Transformation matrix from
++                    camera to ego with shape of (B, num_sweeps,
++                    num_cameras, 4, 4).
++                intrin_mats(Tensor): Intrinsic matrix with shape
++                    of (B, num_sweeps, num_cameras, 4, 4).
++                ida_mats(Tensor): Transformation matrix for ida with
++                    shape of (B, num_sweeps, num_cameras, 4, 4).
++                sensor2sensor_mats(Tensor): Transformation matrix
++                    from key frame camera to sweep frame camera with
++                    shape of (B, num_sweeps, num_cameras, 4, 4).
++                bda_mat(Tensor): Rotation matrix for bda with shape
++                    of (B, 4, 4).
++            timestamps (long): Timestamp.
++                Default: None.
++
++        Returns:
++            tuple(list[dict]): Output results for tasks.
++        """
++        if self.is_train_depth and self.training:
++            x, depth_pred = self.backbone(x,
++                                          mats_dict,
++                                          timestamps,
++                                          is_return_depth=True)
++            preds = self.head(x)
++            return preds, depth_pred
++        else:
++            x = self.backbone(x, mats_dict, timestamps)
++            preds = self.head(x)
++            return preds
++
++    def get_targets(self, gt_boxes, gt_labels):
++        """Generate training targets for a single sample.
++
++        Args:
++            gt_bboxes_3d (:obj:`LiDARInstance3DBoxes`): Ground truth gt boxes.
++            gt_labels_3d (torch.Tensor): Labels of boxes.
++
++        Returns:
++            tuple[list[torch.Tensor]]: Tuple of target including \
++                the following results in order.
++
++                - list[torch.Tensor]: Heatmap scores.
++                - list[torch.Tensor]: Ground truth boxes.
++                - list[torch.Tensor]: Indexes indicating the position \
++                    of the valid boxes.
++                - list[torch.Tensor]: Masks indicating which boxes \
++                    are valid.
++        """
++        return self.head.get_targets(gt_boxes, gt_labels)
++
++    def loss(self, targets, preds_dicts):
++        """Loss function for BEVDepth.
++
++        Args:
++            gt_bboxes_3d (list[:obj:`LiDARInstance3DBoxes`]): Ground
++                truth gt boxes.
++            gt_labels_3d (list[torch.Tensor]): Labels of boxes.
++            preds_dicts (dict): Output of forward function.
++
++        Returns:
++            dict[str:torch.Tensor]: Loss of heatmap and bbox of each task.
++        """
++        return self.head.loss(targets, preds_dicts)
++
++    def get_bboxes(self, preds_dicts, img_metas=None, img=None, rescale=False):
++        """Generate bboxes from bbox head predictions.
++
++        Args:
++            preds_dicts (tuple[list[dict]]): Prediction results.
++            img_metas (list[dict]): Point cloud and image's meta info.
++
++        Returns:
++            list[dict]: Decoded bbox, scores and labels after nms.
++        """
++        return self.head.get_bboxes(preds_dicts, img_metas, img, rescale)

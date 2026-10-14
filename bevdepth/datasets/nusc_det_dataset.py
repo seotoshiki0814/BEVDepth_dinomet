@@ -1,9 +1,10 @@
+import mmengine
 import os
 
 import mmcv
 import numpy as np
 import torch
-from mmdet3d.core.bbox.structures.lidar_box3d import LiDARInstance3DBoxes
+from mmdet3d.structures import LiDARInstance3DBoxes
 from nuscenes.utils.data_classes import Box, LidarPointCloud
 from nuscenes.utils.geometry_utils import view_points
 from PIL import Image
@@ -255,9 +256,9 @@ class NuscDetDataset(Dataset):
         if isinstance(info_paths, list):
             self.infos = list()
             for info_path in info_paths:
-                self.infos.extend(mmcv.load(info_path))
+                self.infos.extend(mmengine.load(info_path))
         else:
-            self.infos = mmcv.load(info_paths)
+            self.infos = mmengine.load(info_paths)
         self.is_train = is_train
         self.ida_aug_conf = ida_aug_conf
         self.bda_aug_conf = bda_aug_conf
