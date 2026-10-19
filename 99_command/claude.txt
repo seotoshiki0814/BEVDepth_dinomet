@@ -1,0 +1,42 @@
+【研究内容】
+今後量産車に適用するNoA（Navigation ON Autopilot）において、異なる機種のカメラのレイアウト違いが与える性能影響を調査したい。
+例えば、機種Aのカメラレイアウトでは精度90％だったが、機種Bのカメラレイアウトでは精度80%だったとき、どこに10%の差分が生まれるのか、
+ISP処理なのかAIモデルなのか何のテコ入れすれば改善するのかを徹底的に調べたい。
+
+【やりたいこと】
+まず第一に、BEVDepthをベースにする。
+BEVDepthをベースにした上で、画像の特徴抽出をDINOV3のWeight-Freezeしたもの、Depthの特徴抽出をMetric3DV2のWeight-Freezeにしたものに差し替えて
+BEVDepthプラスαをベースラインとしレイアウト違いのデータを入れこみたい。
+
+
+【現状】
+BEVDepthにDINOV3を組み込み済。ただし、Lossの収束が悪いため何かしらバグがあるものと見込まれる。
+
+【フォルダやコード】
+・BEVdepthベースのソースコード場所
+D:\BEVDepth-src
+
+・BEVDepthにDINOV3を組み込んだおおもとの実装ファイルの場所
+D:\BEVDepth-src\bevdepth\exps\nuscenes\mv
+bev_depth_dinov3.py
+
+・BEVDepthにDINOV3を組み込んだモデルの学習コード
+python -u bevdepth/exps/nuscenes/mv/bev_depth_dinov3.py \
+  --batch_size_per_device 1 \
+  --max_epochs 1 \
+  --limit_train_batches 5 \
+  --limit_val_batches 0 \
+  --num_sanity_val_steps 0 \
+  2>&1 | tee dinov3_heatmap_debug.log
+
+
+・データセットの場所
+D:\datasets\nuscenes
+
+
+・dockerのコンテナ
+CONTAINER ID   IMAGE                        COMMAND                   CREATED        STATUS                     PORTS                    NAMES
+8ed234fa3247   bevdepth:working             "/opt/nvidia/nvidia_…"   3 days ago     Up 23 minutes              0.0.0.0:6006->6006/tcp   bevdepth-tb
+
+【Claudeへの指示】
+・現状の続きから実装をはじめ、やりたいことを実現したい
