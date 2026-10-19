@@ -362,6 +362,9 @@ class BEVDepthHead(CenterHead):
         """
         heatmaps, anno_boxes, inds, masks = targets
         return_loss = 0
+        total_heatmap_loss = 0
+        total_bbox_loss = 0
+
         for task_id, preds_dict in enumerate(preds_dicts):
             # heatmap focal loss
             preds_dict[0]['heatmap'] = clip_sigmoid(preds_dict[0]['heatmap'])
@@ -372,6 +375,31 @@ class BEVDepthHead(CenterHead):
             loss_heatmap = self.loss_cls(preds_dict[0]['heatmap'],
                                          heatmaps[task_id],
                                          avg_factor=cls_avg_factor)
+
+            if not hasattr(self, "_debug_count"):
+                self._debug_count = 0
+
+            if self._debug_count < 5:
+                with torch.no_grad():
+                    pred_hm = preds_dict[0]['heatmap']
+                    gt_hm = heatmaps[task_id]
+
+                    print(
+                        f"[HEATMAP DEBUG] "
+                        f"task={task_id} "
+                        f"num_pos={num_pos:.0f} "
+                        f"avg_factor={cls_avg_factor:.1f} "
+                        f"shape={tuple(pred_hm.shape)} "
+                        f"pred_mean={pred_hm.mean().item():.6f} "
+                        f"pred_max={pred_hm.max().item():.6f} "
+                        f"gt_max={gt_hm.max().item():.6f} "
+                        f"loss={loss_heatmap.item():.2f}",
+                        flush=True,
+                    )
+
+                if task_id == len(preds_dicts) - 1:
+                    self._debug_count += 1
+
             target_box = anno_boxes[task_id]
             # reconstruct the anno_box from multiple reg heads
             if 'vel' in preds_dict[0].keys():
@@ -404,8 +432,16 @@ class BEVDepthHead(CenterHead):
                                        target_box,
                                        bbox_weights,
                                        avg_factor=num)
+            total_bbox_loss += loss_bbox
+            total_heatmap_loss += loss_heatmap
             return_loss += loss_bbox
             return_loss += loss_heatmap
+
+        self.last_loss_components = {
+            "loss_heatmap": total_heatmap_loss.detach(),
+            "loss_bbox": total_bbox_loss.detach(),
+        }
+
         return return_loss
 
     def get_bboxes(self, preds_dicts, img_metas, img=None, rescale=False):

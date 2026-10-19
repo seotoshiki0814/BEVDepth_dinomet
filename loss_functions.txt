@@ -1,0 +1,297 @@
+
+======================================================================
+FILE: bevdepth/layers/heads/bev_depth_head.py
+======================================================================
+  78:             # ovr = inter / areas[j]
+  79:             if dist_x <= dist_x_th * thresh_scale / 2 and \
+  80:                dist_y <= dist_y_th * thresh_scale / 2:
+  81:                 suppressed[j] = 1
+  82:     return keep[:post_max_size]
+  83: 
+  84: 
+  85: class BEVDepthHead(CenterHead):
+  86:     """Head for BevDepth.
+  87: 
+  88:     Args:
+  89:         in_channels(int): Number of channels after bev_neck.
+  90:         tasks(dict): Tasks for head.
+  91:         bbox_coder(dict): Config of bbox coder.
+  92:         common_heads(dict): Config of head for each task.
+  93:         loss_cls(dict): Config of classification loss.
+  94:         loss_bbox(dict): Config of regression loss.
+  95:         gaussian_overlap(float): Gaussian overlap used for `get_targets`.
+  96:         min_radius(int): Min radius used for `get_targets`.
+  97:         train_cfg(dict): Config used in the training process.
+  98:         test_cfg(dict): Config used in the test process.
+  99:         bev_backbone_conf(dict): Cnfig of bev_backbone.
+ 100:         bev_neck_conf(dict): Cnfig of bev_neck.
+ 101:     """
+ 102: 
+ 103:     def __init__(
+ 104:         self,
+ 105:         in_channels=256,
+ 106:         tasks=None,
+ 107:         bbox_coder=None,
+ 108:         common_heads=dict(),
+ 109:         loss_cls=dict(type='mmdet.GaussianFocalLoss', reduction='mean'),
+ 110:         loss_bbox=dict(type='mmdet.L1Loss', reduction='mean', loss_weight=0.25),
+ 111:         gaussian_overlap=0.1,
+ 112:         min_radius=2,
+ 113:         train_cfg=None,
+ 114:         test_cfg=None,
+ 115:         bev_backbone_conf=bev_backbone_conf,
+ 116:         bev_neck_conf=bev_neck_conf,
+ 117:         separate_head=dict(type='SeparateHead',
+ 118:                            init_bias=-2.19,
+ 119:                            final_kernel=3),
+ 120:     ):
+ 121:         super(BEVDepthHead, self).__init__(
+ 122:             in_channels=in_channels,
+ 123:             tasks=tasks,
+ 124:             bbox_coder=bbox_coder,
+ 125:             common_heads=common_heads,
+ 126:             loss_cls=loss_cls,
+ 127:             loss_bbox=loss_bbox,
+ 128:             separate_head=separate_head,
+ 129:         )
+ 130:         self.trunk = MMDET_MODELS.build(bev_backbone_conf)
+ 131:         self.trunk.init_weights()
+ 132:         self.neck = MODELS.build(bev_neck_conf)
+ 133:         self.neck.init_weights()
+ 134:         del self.trunk.maxpool
+ 135:         self.gaussian_overlap = gaussian_overlap
+ 136:         self.min_radius = min_radius
+ 137:         self.train_cfg = train_cfg
+ 138:         self.test_cfg = test_cfg
+ 139: 
+ 140:     @autocast(False)
+ 141:     def forward(self, x):
+ 142:         """Forward pass.
+ 143: 
+ 144:         Args:
+ 145:             feats (list[torch.Tensor]): Multi-level features, e.g.,
+ 146:                 features produced by FPN.
+ 147: 
+ 148:         Returns:
+ 149:             tuple(list[dict]): Output results for tasks.
+ 150:         """
+ 151:         x = x.float()
+ 152:         # FPN
+ 153:         trunk_outs = [x]
+ 154:         if self.trunk.deep_stem:
+ 155:             x = self.trunk.stem(x)
+ 156:         else:
+ 157:             x = self.trunk.conv1(x)
+ 158:             x = self.trunk.norm1(x)
+ 159:             x = self.trunk.relu(x)
+ 160:         for i, layer_name in enumerate(self.trunk.res_layers):
+ 161:             res_layer = getattr(self.trunk, layer_name)
+ 162:             x = res_layer(x)
+ 163:             if i in self.trunk.out_indices:
+ 164:                 trunk_outs.append(x)
+ 165:         fpn_output = self.neck(trunk_outs)
+ 166:         ret_values = super().forward(fpn_output)
+ 167:         return ret_values
+ 168: 
+ 169:     def get_targets(self, gt_bboxes_3d, gt_labels_3d):
+ 170:         """Generate BEVDepth targets using the legacy API."""
+ 171:         from mmdet.models.utils import multi_apply
+ 172: 
+ 173:         heatmaps, anno_boxes, inds, masks = multi_apply(
+ 174:             self.get_targets_single,
+ 175:             gt_bboxes_3d,
+ 176:             gt_labels_3d,
+ 177:         )
+ 178: 
+ 179:         heatmaps = [
+ 180:             torch.stack(items)
+ 181:             for items in zip(*heatmaps)
+ 182:         ]
+ 183:         anno_boxes = [
+ 184:             torch.stack(items)
+ 185:             for items in zip(*anno_boxes)
+ 186:         ]
+ 187:         inds = [
+ 188:             torch.stack(items)
+ 189:             for items in zip(*inds)
+ 190:         ]
+ 191:         masks = [
+ 192:             torch.stack(items)
+ 193:             for items in zip(*masks)
+ 194:         ]
+ 195: 
+ 196:         return heatmaps, anno_boxes, inds, masks
+ 197: 
+ 198:     def get_targets_single(self, gt_bboxes_3d, gt_labels_3d):
+ 199:         """Generate training targets for a single sample.
+ 200: 
+ 201:         Args:
+ 202:             gt_bboxes_3d (:obj:`LiDARInstance3DBoxes`): Ground truth gt boxes.
+ 203:             gt_labels_3d (torch.Tensor): Labels of boxes.
+ 204: 
+ 205:         Returns:
+ 206:             tuple[list[torch.Tensor]]: Tuple of target including \
+ 207:                 the following results in order.
+ 208: 
+ 209:                 - list[torch.Tensor]: Heatmap scores.
+ 210:                 - list[torch.Tensor]: Ground truth boxes.
+ 211:                 - list[torch.Tensor]: Indexes indicating the position \
+ 212:                     of the valid boxes.
+ 213:                 - list[torch.Tensor]: Masks indicating which boxes \
+ 214:                     are valid.
+ 215:         """
+ 216:         max_objs = self.train_cfg['max_objs'] * self.train_cfg['dense_reg']
+ 217:         grid_size = torch.tensor(self.train_cfg['grid_size'])
+ 218:         pc_range = torch.tensor(self.train_cfg['point_cloud_range'])
+ 219:         voxel_size = torch.tensor(self.train_cfg['voxel_size'])
+ 220: 
+ 221:         feature_map_size = grid_size[:2] // self.train_cfg['out_size_factor']
+ 222: 
+ 223:         # reorganize the gt_dict by tasks
+ 224:         task_masks = []
+ 225:         flag = 0
+ 226:         for class_name in self.class_names:
+ 227:             task_masks.append([
+ 228:                 torch.where(gt_labels_3d == class_name.index(i) + flag)
+ 229:                 for i in class_name
+ 230:             ])
+ 231:             flag += len(class_name)
+ 232: 
+ 233:         task_boxes = []
+ 336:                         ])
+ 337:                     else:
+ 338:                         anno_box[new_idx] = torch.cat([
+ 339:                             center - torch.tensor([x, y], device='cuda'),
+ 340:                             z.unsqueeze(0), box_dim,
+ 341:                             torch.sin(rot).unsqueeze(0),
+ 342:                             torch.cos(rot).unsqueeze(0)
+ 343:                         ])
+ 344: 
+ 345:             heatmaps.append(heatmap)
+ 346:             anno_boxes.append(anno_box)
+ 347:             masks.append(mask)
+ 348:             inds.append(ind)
+ 349:         return heatmaps, anno_boxes, inds, masks
+ 350: 
+ 351:     def loss(self, targets, preds_dicts, **kwargs):
+ 352:         """Loss function for BEVDepthHead.
+ 353: 
+ 354:         Args:
+ 355:             gt_bboxes_3d (list[:obj:`LiDARInstance3DBoxes`]): Ground
+ 356:                 truth gt boxes.
+ 357:             gt_labels_3d (list[torch.Tensor]): Labels of boxes.
+ 358:             preds_dicts (dict): Output of forward function.
+ 359: 
+ 360:         Returns:
+ 361:             dict[str:torch.Tensor]: Loss of heatmap and bbox of each task.
+ 362:         """
+ 363:         heatmaps, anno_boxes, inds, masks = targets
+ 364:         return_loss = 0
+ 365:         for task_id, preds_dict in enumerate(preds_dicts):
+ 366:             # heatmap focal loss
+ 367:             preds_dict[0]['heatmap'] = clip_sigmoid(preds_dict[0]['heatmap'])
+ 368:             num_pos = heatmaps[task_id].eq(1).float().sum().item()
+ 369:             cls_avg_factor = torch.clamp(reduce_mean(
+ 370:                 heatmaps[task_id].new_tensor(num_pos)),
+ 371:                                          min=1).item()
+ 372:             loss_heatmap = self.loss_cls(preds_dict[0]['heatmap'],
+ 373:                                          heatmaps[task_id],
+ 374:                                          avg_factor=cls_avg_factor)
+ 375:             target_box = anno_boxes[task_id]
+ 376:             # reconstruct the anno_box from multiple reg heads
+ 377:             if 'vel' in preds_dict[0].keys():
+ 378:                 preds_dict[0]['anno_box'] = torch.cat(
+ 379:                     (preds_dict[0]['reg'], preds_dict[0]['height'],
+ 380:                      preds_dict[0]['dim'], preds_dict[0]['rot'],
+ 381:                      preds_dict[0]['vel']),
+ 382:                     dim=1,
+ 383:                 )
+ 384:             else:
+ 385:                 preds_dict[0]['anno_box'] = torch.cat(
+ 386:                     (preds_dict[0]['reg'], preds_dict[0]['height'],
+ 387:                      preds_dict[0]['dim'], preds_dict[0]['rot']),
+ 388:                     dim=1,
+ 389:                 )
+ 390:             # Regression loss for dimension, offset, height, rotation
+ 391:             num = masks[task_id].float().sum()
+ 392:             ind = inds[task_id]
+ 393:             pred = preds_dict[0]['anno_box'].permute(0, 2, 3, 1).contiguous()
+ 394:             pred = pred.view(pred.size(0), -1, pred.size(3))
+ 395:             pred = self._gather_feat(pred, ind)
+ 396:             mask = masks[task_id].unsqueeze(2).expand_as(target_box).float()
+ 397:             num = torch.clamp(reduce_mean(target_box.new_tensor(num)),
+ 398:                               min=1e-4).item()
+ 399:             isnotnan = (~torch.isnan(target_box)).float()
+ 400:             mask *= isnotnan
+ 401:             code_weights = self.train_cfg['code_weights']
+ 402:             bbox_weights = mask * mask.new_tensor(code_weights)
+ 403:             loss_bbox = self.loss_bbox(pred,
+ 404:                                        target_box,
+ 405:                                        bbox_weights,
+ 406:                                        avg_factor=num)
+ 407:             return_loss += loss_bbox
+ 408:             return_loss += loss_heatmap
+ 409:         return return_loss
+ 410: 
+ 411:     def get_bboxes(self, preds_dicts, img_metas, img=None, rescale=False):
+ 412:         """Generate bboxes from bbox head predictions.
+ 413: 
+ 414:         Args:
+ 415:             preds_dicts (tuple[list[dict]]): Prediction results.
+ 416:             img_metas (list[dict]): Point cloud and image's meta info.
+ 417: 
+ 418:         Returns:
+ 419:             list[dict]: Decoded bbox, scores and labels after nms.
+ 420:         """
+ 421:         rets = []
+ 422:         for task_id, preds_dict in enumerate(preds_dicts):
+ 423:             num_class_with_bg = self.num_classes[task_id]
+ 424:             batch_size = preds_dict[0]['heatmap'].shape[0]
+ 425:             batch_heatmap = preds_dict[0]['heatmap'].sigmoid()
+ 426: 
+ 427:             batch_reg = preds_dict[0]['reg']
+ 428:             batch_hei = preds_dict[0]['height']
+ 429: 
+ 430:             if self.norm_bbox:
+ 431:                 batch_dim = torch.exp(preds_dict[0]['dim'])
+ 432:             else:
+ 433:                 batch_dim = preds_dict[0]['dim']
+ 434: 
+ 435:             batch_rots = preds_dict[0]['rot'][:, 0].unsqueeze(1)
+ 436:             batch_rotc = preds_dict[0]['rot'][:, 1].unsqueeze(1)
+ 437: 
+ 438:             if 'vel' in preds_dict[0]:
+ 439:                 batch_vel = preds_dict[0]['vel']
+ 440:             else:
+ 441:                 batch_vel = None
+ 442:             temp = self.bbox_coder.decode(batch_heatmap,
+ 443:                                           batch_rots,
+ 444:                                           batch_rotc,
+ 445:                                           batch_hei,
+ 446:                                           batch_dim,
+ 447:                                           batch_vel,
+ 448:                                           reg=batch_reg,
+ 449:                                           task_id=task_id)
+ 450:             assert self.test_cfg['nms_type'] in [
+ 451:                 'size_aware_circle', 'circle', 'rotate'
+ 452:             ]
+ 453:             batch_reg_preds = [box['bboxes'] for box in temp]
+ 454:             batch_cls_preds = [box['scores'] for box in temp]
+ 455:             batch_cls_labels = [box['labels'] for box in temp]
+ 456:             if self.test_cfg['nms_type'] == 'circle':
+ 457:                 ret_task = []
+ 458:                 for i in range(batch_size):
+ 459:                     boxes3d = temp[i]['bboxes']
+ 460:                     scores = temp[i]['scores']
+ 461:                     labels = temp[i]['labels']
+ 462:                     centers = boxes3d[:, [0, 1]]
+ 463:                     boxes = torch.cat([centers, scores.view(-1, 1)], dim=1)
+ 464:                     keep = torch.tensor(circle_nms(
+ 465:                         boxes.detach().cpu().numpy(),
+ 466:                         self.test_cfg['min_radius'][task_id],
+ 467:                         post_max_size=self.test_cfg['post_max_size']),
+ 468:                                         dtype=torch.long,
+ 469:                                         device=boxes.device)
+ 470: 
+ 471:                     boxes3d = boxes3d[keep]
+ 472:                     scores = scores[keep]
