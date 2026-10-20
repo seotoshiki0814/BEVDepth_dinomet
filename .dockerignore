@@ -1,0 +1,16 @@
+# Keep the build context small: data, results and build artifacts stay on
+# the host and are bind-mounted at run time.
+data/
+outputs/
+work_dirs/
+workspace/
+build/
+*.egg-info/
+**/__pycache__/
+**/*.so
+*.ckpt
+*.pth
+*.log
+*.logcd
+*.csv
+.git/

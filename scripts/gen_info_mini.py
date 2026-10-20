@@ -1,4 +1,4 @@
-import mmcv
+import mmengine
 from nuscenes.nuscenes import NuScenes
 from nuscenes.utils import splits
 
@@ -27,12 +27,12 @@ def main():
         splits.mini_val
     )
 
-    mmcv.dump(
+    mmengine.dump(
         train_infos,
         './data/nuScenes/nuscenes_infos_train.pkl'
     )
 
-    mmcv.dump(
+    mmengine.dump(
         val_infos,
         './data/nuScenes/nuscenes_infos_val.pkl'
     )

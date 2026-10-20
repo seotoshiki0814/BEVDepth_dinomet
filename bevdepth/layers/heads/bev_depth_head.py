@@ -127,6 +127,13 @@ class BEVDepthHead(CenterHead):
             loss_bbox=loss_bbox,
             separate_head=separate_head,
         )
+        # mmdet3d>=1.x applies heatmap init_bias (-2.19) only in
+        # init_weights(), which Lightning never calls. Without this every
+        # heatmap pixel starts at sigmoid(0)=0.5 and loss_heatmap explodes
+        # (~1e4). Only the bias is set; full init_weights() also applies
+        # Kaiming init, which makes the initial logits blow up (|x|>100).
+        for task_head in self.task_heads:
+            task_head.heatmap[-1].bias.data.fill_(task_head.init_bias)
         self.trunk = MMDET_MODELS.build(bev_backbone_conf)
         self.trunk.init_weights()
         self.neck = MODELS.build(bev_neck_conf)

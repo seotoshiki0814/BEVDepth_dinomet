@@ -1,4 +1,6 @@
 
+・入ったら必ず実行
+conda activate bevfoundation
 
 
 docker run --gpus all -it `

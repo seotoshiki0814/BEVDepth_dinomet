@@ -1,4 +1,4 @@
-import mmcv
+import mmengine
 import numpy as np
 from nuscenes.nuscenes import NuScenes
 from nuscenes.utils import splits
@@ -154,14 +154,14 @@ def main():
     val_scenes = splits.val
     train_infos = generate_info(trainval_nusc, train_scenes)
     val_infos = generate_info(trainval_nusc, val_scenes)
-    mmcv.dump(train_infos, './data/nuScenes/nuscenes_infos_train.pkl')
-    mmcv.dump(val_infos, './data/nuScenes/nuscenes_infos_val.pkl')
+    mmengine.dump(train_infos, './data/nuScenes/nuscenes_infos_train.pkl')
+    mmengine.dump(val_infos, './data/nuScenes/nuscenes_infos_val.pkl')
     test_nusc = NuScenes(version='v1.0-test',
                          dataroot='./data/nuScenes/',
                          verbose=True)
     test_scenes = splits.test
     test_infos = generate_info(test_nusc, test_scenes)
-    mmcv.dump(test_infos, './data/nuScenes/nuscenes_infos_test.pkl')
+    mmengine.dump(test_infos, './data/nuScenes/nuscenes_infos_test.pkl')
 
 
 if __name__ == '__main__':

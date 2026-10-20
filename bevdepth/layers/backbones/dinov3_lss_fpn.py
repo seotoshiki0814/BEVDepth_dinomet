@@ -18,12 +18,15 @@ class DINOv3LSSFPN(BaseLSSFPN):
 
         self.camera_chunk_size = camera_chunk_size
 
+        # features_only=True prunes the final LayerNorm to Identity, which
+        # leaves raw block outputs (std~50, |x|>1000). Keep the full model
+        # and take the normalized last block via forward_intermediates.
         self.dinov3 = timm.create_model(
             "vit_base_patch16_dinov3.lvd1689m",
             pretrained=True,
-            features_only=True,
-            out_indices=(11,),
+            num_classes=0,
         )
+        self.dinov3_out_index = len(self.dinov3.blocks) - 1
 
         for param in self.dinov3.parameters():
             param.requires_grad_(False)
@@ -51,7 +54,13 @@ class DINOv3LSSFPN(BaseLSSFPN):
         features = []
         with torch.no_grad():
             for chunk in imgs.split(self.camera_chunk_size, dim=0):
-                feat = self.dinov3(chunk)[0]
+                feat = self.dinov3.forward_intermediates(
+                    chunk,
+                    indices=[self.dinov3_out_index],
+                    norm=True,
+                    output_fmt="NCHW",
+                    intermediates_only=True,
+                )[0]
                 features.append(feat)
 
         features = torch.cat(features, dim=0)
