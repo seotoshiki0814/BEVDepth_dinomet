@@ -1,8 +1,4 @@
 
-・入ったら必ず実行
-conda activate bevfoundation
-
-
 docker run --gpus all -it `
   --name bevdepth-tb `
   --shm-size=16g `
@@ -14,118 +10,19 @@ docker run --gpus all -it `
   bash
 
 
+・入ったら必ず実行
+docker start 8ed
+docker attach 8ed
+conda activate bevfoundation
 
-tensorboard \
-  --logdir /workspace/BEVDepth/outputs/bev_depth_camera_layout/lightning_logs \
-  --host 0.0.0.0 \
-  --port 6006
-
-
-
-cd /workspace/BEVDepth
-
-python bevdepth/exps/nuscenes/mv/bev_depth_camera_layout.py \
-  --batch_size_per_device 1 \
-  --max_epochs 5 \
-  --limit_train_batches 100 \
-  --limit_val_batches 0 \
-  --num_sanity_val_steps 0
+・学習コード
+python -u bevdepth/exps/nuscenes/mv/bev_depth_dinov3.py   --batch_size_per_device 1   --max_epochs 1   --limit_train_batches 5   --limit_val_batches 0   --num_sanity_val_steps 0   2>&1 | tee dinov3_heatmap_debug.log
 
 
-cat /tmp/bevdepth_train_100.log
+python -u bevdepth/exps/nuscenes/mv/bev_depth_dinov3_metric3d.py --batch_size_per_device 1 --lr 1e-4 --max_epochs 24 --depth_prior_mode lift ...
 
-【tensorboard」
-docker exec -it bevdepth-tb bash
-
-
-
-cd /workspace/BEVDepth
-
-tensorboard \
-  --logdir outputs/bev_depth_camera_layout/lightning_logs \
-  --host 0.0.0.0 \
-  --port 6006 \
-  --reload_interval 5
-  
+較正結果から、Metric3D は LiDAR より約4%遠めに出る傾向（s=0.958）があり、誤差は深度に比例してσ=0.18×dとなった
+これを反映し、μ=深度×0.958、σ(d)=max(0.5m, 0.18·d)としてビンごとに積分する形で決め打ちし、backboneにliftモードを追加
 
 
-【dinoV3バージョン】
-cd /workspace/BEVDepth
-
-python -u bevdepth/exps/nuscenes/mv/bev_depth_dinov3.py \
-  --batch_size_per_device 1 \
-  --max_epochs 1 \
-  --limit_train_batches 100 \
-  --limit_val_batches 0 \
-  --num_sanity_val_steps 0 \
-  2>&1 | tee /tmp/bevdepth_dinov3_train.log
-
-
-(base) root@8ed234fa3247:/workspace/BEVDepth# tensorboard \
-  --logdir /workspace/BEVDepth/outputs \
-  --host 0.0.0.0 \
-  --port 6006 \
-  --reload_interval 5
-
-
-
-(bevfoundation) root@8ed234fa3247:/workspace/BEVDepth# cd /workspace/BEVDepth
-
-python -u bevdepth/exps/nuscenes/mv/bev_depth_dinov3.py \
-  --batch_size_per_device 1 \
-  --max_epochs 4 \
-  --limit_train_batches 250 \
-  --limit_val_batches 0 \
-  --num_sanity_val_steps 0 \
-  2>&1 | tee /tmp/dinov3_rgb_1000steps.log
-
-tensorboard \
-  --logdir outputs/bev_depth_dinov3/lightning_logs \
-  --host 0.0.0.0 \
-  --port 6006
-
-ログを一緒に出力
-
-
-
-
-python -u bevdepth/exps/nuscenes/mv/bev_depth_dinov3.py \
-  --batch_size_per_device 1 \
-  --max_epochs 1 \
-  --limit_train_batches 100 \
-  --limit_val_batches 0 \
-  --num_sanity_val_steps 0 \
-  2>&1 | tee dinov3_loss_detail.log
-
-
-cd /workspace/BEVDepth
-
-python - <<'PY'
-import csv
-from pathlib import Path
-from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
-
-log_dir = Path("outputs/bev_depth_dinov3/lightning_logs/version_8")
-output = Path("/workspace/BEVDepth/dinov3_loss_detail_v8.csv")
-
-ea = EventAccumulator(str(log_dir), size_guidance={"scalars": 0})
-ea.Reload()
-
-rows = []
-for tag in ea.Tags().get("scalars", []):
-    for event in ea.Scalars(tag):
-        rows.append([event.step, tag, event.value])
-
-rows.sort(key=lambda row: (row[0], row[1]))
-
-with output.open("w", newline="") as f:
-    writer = csv.writer(f)
-    writer.writerow(["step", "tag", "value"])
-    writer.writerows(rows)
-
-print("Saved:", output)
-print("Rows:", len(rows))
-print("Tags:")
-for tag in ea.Tags().get("scalars", []):
-    print(" -", tag)
-PY
+古いコード：python -u bevdepth/exps/nuscenes/mv/bev_depth_dinov3.py   --batch_size_per_device 1   --max_epochs 1   --limit_train_batches 5   --limit_val_batches 0   --num_sanity_val_steps 0   2>&1 | tee dinov3_heatmap_debug.log

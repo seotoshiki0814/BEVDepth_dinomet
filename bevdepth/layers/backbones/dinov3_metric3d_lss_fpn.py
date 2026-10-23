@@ -21,6 +21,17 @@ class DINOv3Metric3DLSSFPN(DINOv3LSSFPN):
                    features fed to DepthNet, which learns to refine it.
         'replace': the prior is used directly as the LSS depth distribution;
                    DepthNet only provides context features.
+        'lift':    no DepthNet. The prior is the LSS depth distribution and
+                   context = Conv1x1(concat[DINOv3 adapter feat, prior]).
+
+    depth_prior_type:
+        'hard':  per-cell histogram of 4x4 sub-sampled Metric3D depths.
+        'gauss': each of the 4x4 sub-samples contributes a Gaussian
+                 N(s * d, sigma(d)), sigma(d) = max(sigma_min, k * s * d),
+                 integrated over the bin edges and averaged per cell.
+                 Defaults (s=0.958, k=0.18, sigma_min=0.5 m) were calibrated
+                 against LiDAR on the nuScenes-mini train split
+                 (scripts/calib_metric3d_sigma.py).
     """
 
     CANONICAL_FOCAL = 1000.0
@@ -30,15 +41,27 @@ class DINOv3Metric3DLSSFPN(DINOv3LSSFPN):
                  metric3d_model='metric3d_vit_small',
                  metric3d_input_size=(616, 1064),
                  depth_prior_mode='concat',
+                 depth_prior_type=None,
                  depth_prior_eps=1e-3,
+                 depth_scale=0.958,
+                 depth_sigma_k=0.18,
+                 depth_sigma_min=0.5,
                  **kwargs):
         super().__init__(*args, **kwargs)
-        assert depth_prior_mode in ('concat', 'replace')
+        assert depth_prior_mode in ('concat', 'replace', 'lift')
+        if depth_prior_type is None:
+            depth_prior_type = 'gauss' if depth_prior_mode == 'lift' \
+                else 'hard'
+        assert depth_prior_type in ('hard', 'gauss')
         assert all(s % 14 == 0 for s in metric3d_input_size), \
             'Metric3Dv2 ViT needs input size divisible by 14'
 
         self.depth_prior_mode = depth_prior_mode
+        self.depth_prior_type = depth_prior_type
         self.depth_prior_eps = depth_prior_eps
+        self.depth_scale = depth_scale
+        self.depth_sigma_k = depth_sigma_k
+        self.depth_sigma_min = depth_sigma_min
         self.metric3d_input_size = tuple(metric3d_input_size)
 
         # METRIC3D_REPO_DIR (set in the Dockerfile) points to a clone pinned
@@ -67,6 +90,12 @@ class DINOv3Metric3DLSSFPN(DINOv3LSSFPN):
                 stride=old.stride,
                 padding=old.padding,
             )
+        elif depth_prior_mode == 'lift':
+            in_channels = self.depth_net.reduce_conv[0].in_channels
+            del self.depth_net
+            self.context_conv = nn.Conv2d(in_channels + self.depth_channels,
+                                          self.output_channels,
+                                          kernel_size=1)
 
         # Filled by get_cam_feats, consumed by _forward_depth_net.
         self._canonical_depth = None
@@ -125,21 +154,49 @@ class DINOv3Metric3DLSSFPN(DINOv3LSSFPN):
         metric = canonical * fx / self.CANONICAL_FOCAL
         self.last_metric_depth = metric.detach()
 
-        # Sample at 4x the feature resolution, then histogram per cell.
+        # Sample at 4x the feature resolution, then aggregate per cell.
+        # Bin i covers [d_min + i*step, d_min + (i+1)*step), the same
+        # convention as get_downsampled_gt_depth.
         fh, fw = feat_hw
         depth = F.interpolate(metric, size=(fh * 4, fw * 4), mode='nearest')
         d_min, d_max, d_step = self.d_bound
-        bins = ((depth - d_min) / d_step).floor().long()
-        valid = (bins >= 0) & (bins < self.depth_channels)
-        bins = bins.clamp(0, self.depth_channels - 1)
-        one_hot = F.one_hot(bins[:, 0], self.depth_channels)
-        one_hot = one_hot.permute(0, 3, 1, 2).float() * valid.float()
-        prior = F.avg_pool2d(one_hot, kernel_size=4)
+        if self.depth_prior_type == 'gauss':
+            mu = depth * self.depth_scale
+            sigma = (mu * self.depth_sigma_k).clamp(min=self.depth_sigma_min)
+            edges = d_min + d_step * torch.arange(
+                self.depth_channels + 1, device=mu.device,
+                dtype=mu.dtype).view(1, -1, 1, 1)
+            cdf = torch.special.ndtr((edges - mu) / sigma)
+            per_sample = cdf[:, 1:] - cdf[:, :-1]
+        else:
+            bins = ((depth - d_min) / d_step).floor().long()
+            valid = (bins >= 0) & (bins < self.depth_channels)
+            bins = bins.clamp(0, self.depth_channels - 1)
+            per_sample = F.one_hot(bins[:, 0], self.depth_channels)
+            per_sample = per_sample.permute(0, 3, 1, 2).float() * \
+                valid.float()
+        # Mass outside [d_min, d_max) is dropped, so sum <= 1.
+        prior = F.avg_pool2d(per_sample, kernel_size=4)
         self.last_depth_prior = prior.detach()
         return prior
 
     def _forward_depth_net(self, feat, mats_dict):
-        prior = self._depth_prior(mats_dict, feat.shape[-2:]).to(feat.dtype)
+        prior = self._depth_prior(mats_dict, feat.shape[-2:])
+        if self.depth_prior_mode == 'lift':
+            # Downstream LSS does softmax(depth logits) * context. Feed the
+            # normalized prior as logits and fold its in-range mass into the
+            # context, so the lifted feature is prior * context and pixels
+            # whose depth is out of range (sky, >58 m) place nothing.
+            mass = prior.sum(dim=1, keepdim=True)
+            p = torch.where(mass > 1e-6, prior / mass.clamp(min=1e-6),
+                            torch.full_like(prior, 1.0 / prior.shape[1]))
+            logits = p.clamp(min=1e-6).log()
+            context = self.context_conv(
+                torch.cat([feat, prior.to(feat.dtype)], dim=1))
+            context = context * mass.to(context.dtype)
+            return torch.cat([logits.to(context.dtype), context], dim=1)
+
+        prior = prior.to(feat.dtype)
         if self.depth_prior_mode == 'concat':
             return self.depth_net(torch.cat([feat, prior], dim=1), mats_dict)
 

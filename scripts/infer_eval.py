@@ -136,7 +136,7 @@ def visualize(idx, info, det, class_names, data_root, extra, out_path,
 
     # Depth row (CAM_FRONT): Metric3D / LSS expectation / LiDAR GT
     titles = ['CAM_FRONT Metric3Dv2 depth [m]',
-              'CAM_FRONT LSS depth E[d] (DepthNet) [m]',
+              'CAM_FRONT LSS depth E[d] (fed to Lift) [m]',
               'CAM_FRONT LiDAR depth GT [m]']
     for j, key in enumerate(['metric3d', 'lss', 'lidar']):
         ax = fig.add_subplot(gs[2, j])
@@ -163,7 +163,8 @@ def main():
     ap.add_argument('--num_vis', type=int, default=10)
     ap.add_argument('--score_thr', type=float, default=0.3)
     ap.add_argument('--version', default='v1.0-mini')
-    ap.add_argument('--depth_prior_mode', default=None)
+    ap.add_argument('--depth_prior_mode', default=None,
+                    choices=['concat', 'replace', 'lift'])
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
 
@@ -174,9 +175,17 @@ def main():
     bb = m.model.backbone
     cam_front = CAMS.index('CAM_FRONT')
 
+    # Capture the depth logits actually fed to LSS (DepthNet output, or the
+    # Metric3D prior in replace / lift mode, where there may be no DepthNet).
     depth_out = {}
-    bb.depth_net.register_forward_hook(
-        lambda mod, i, o: depth_out.__setitem__('x', o.detach()))
+    forward_depth_net = bb._forward_depth_net
+
+    def capture_depth(feat, mats_dict):
+        out = forward_depth_net(feat, mats_dict)
+        depth_out['x'] = out.detach()
+        return out
+
+    bb._forward_depth_net = capture_depth
 
     loader = m.val_dataloader()
     ds = loader.dataset
@@ -194,17 +203,16 @@ def main():
             d_min, _, step = bb.d_bound
             centers = torch.arange(D, device=logits.device) * step + d_min
             prob = logits.softmax(1)
-            ex['lss'] = (prob * centers.view(1, -1, 1, 1)).sum(
-                1)[0].cpu().numpy()
+            lss = (prob * centers.view(1, -1, 1, 1)).sum(1)[0]
+            if getattr(bb, 'depth_prior_mode', None) == 'lift':
+                # Pixels whose prior mass is out of range lift nothing.
+                mass = bb.last_depth_prior[cam_front].sum(0)
+                lss = torch.where(mass > 0.05, lss,
+                                  torch.full_like(lss, float('nan')))
+            ex['lss'] = lss.cpu().numpy()
             if getattr(bb, 'last_metric_depth', None) is not None:
                 ex['metric3d'] = bb.last_metric_depth[cam_front, 0].cpu() \
                     .numpy()
-                # replace mode: LSS uses the prior, not DepthNet's depth.
-                if bb.depth_prior_mode == 'replace':
-                    p = bb.last_depth_prior[cam_front:cam_front + 1] + 1e-3
-                    p = p / p.sum(1, keepdim=True)
-                    ex['lss'] = (p * centers.view(1, -1, 1, 1)).sum(
-                        1)[0].cpu().numpy()
             info = ds.infos[b]
             ci = info['cam_infos']['CAM_FRONT']
             pts = np.fromfile(osp.join(
