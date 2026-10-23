@@ -16,13 +16,12 @@ docker attach 8ed
 conda activate bevfoundation
 
 ・学習コード
-python -u bevdepth/exps/nuscenes/mv/bev_depth_dinov3.py   --batch_size_per_device 1   --max_epochs 1   --limit_train_batches 5   --limit_val_batches 0   --num_sanity_val_steps 0   2>&1 | tee dinov3_heatmap_debug.log
-
-
 python -u bevdepth/exps/nuscenes/mv/bev_depth_dinov3_metric3d.py --batch_size_per_device 1 --lr 1e-4 --max_epochs 24 --depth_prior_mode lift ...
 
 較正結果から、Metric3D は LiDAR より約4%遠めに出る傾向（s=0.958）があり、誤差は深度に比例してσ=0.18×dとなった
 これを反映し、μ=深度×0.958、σ(d)=max(0.5m, 0.18·d)としてビンごとに積分する形で決め打ちし、backboneにliftモードを追加
 
 
-古いコード：python -u bevdepth/exps/nuscenes/mv/bev_depth_dinov3.py   --batch_size_per_device 1   --max_epochs 1   --limit_train_batches 5   --limit_val_batches 0   --num_sanity_val_steps 0   2>&1 | tee dinov3_heatmap_debug.log
+docker run --gpus all -it --name bevdepth_20261023 --shm-size=32g -p 6006:6006 -v C:\01_workspace_drive\01_Ho\sensorAI\model_gen\BEVDepth_dinomet:/workspace/BEVDepth -v D:\datasets\nuscenes:/workspace/BEVDepth/data/nuScenes bevdepth-foundation:cu121
+
+PYTHONPATH=. python scripts/diag_heatmap.py dinov3 2>&1 | grep -E "^(img|dinov3|adapter|bev|task|loss)"
