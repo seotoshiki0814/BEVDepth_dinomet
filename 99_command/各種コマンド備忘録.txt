@@ -26,3 +26,14 @@ python -u bevdepth/exps/nuscenes/mv/bev_depth_dinov3_metric3d.py --batch_size_pe
 
 
 古いコード：python -u bevdepth/exps/nuscenes/mv/bev_depth_dinov3.py   --batch_size_per_device 1   --max_epochs 1   --limit_train_batches 5   --limit_val_batches 0   --num_sanity_val_steps 0   2>&1 | tee dinov3_heatmap_debug.log
+
+
+
+layers/backbones/dinov3_metric3d_lss_fpn.py
+・get_cam_featsで呼び出す_run_metric3dがmetric3d v2を動かす実態
+
+モデルの呼び出し元
+base_exp.py from pytorch_lightning.core import LightningModule
+↓
+base_exp.py BEVDepthLightningModel→bev_depth_dinov3.py BEVDepthLightningModel→bev_depth_dinov3_metric3d.py BEVDepthLightningModel
+
