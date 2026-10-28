@@ -16,17 +16,10 @@ docker attach 8ed
 conda activate bevfoundation
 
 ・学習コード
-python -u bevdepth/exps/nuscenes/mv/bev_depth_dinov3.py   --batch_size_per_device 1   --max_epochs 1   --limit_train_batches 5   --limit_val_batches 0   --num_sanity_val_steps 0   2>&1 | tee dinov3_heatmap_debug.log
-
-
-python -u bevdepth/exps/nuscenes/mv/bev_depth_dinov3_metric3d.py --batch_size_per_device 1 --lr 1e-4 --max_epochs 24 --depth_prior_mode lift ...
+python -u bevdepth/exps/nuscenes/mv/bev_depth_dinov3_metric3d.py --batch_size_per_device 8 --lr 1e-4 --max_epochs 24 --depth_prior_mode lift
 
 較正結果から、Metric3D は LiDAR より約4%遠めに出る傾向（s=0.958）があり、誤差は深度に比例してσ=0.18×dとなった
 これを反映し、μ=深度×0.958、σ(d)=max(0.5m, 0.18·d)としてビンごとに積分する形で決め打ちし、backboneにliftモードを追加
-
-
-古いコード：python -u bevdepth/exps/nuscenes/mv/bev_depth_dinov3.py   --batch_size_per_device 1   --max_epochs 1   --limit_train_batches 5   --limit_val_batches 0   --num_sanity_val_steps 0   2>&1 | tee dinov3_heatmap_debug.log
-
 
 
 layers/backbones/dinov3_metric3d_lss_fpn.py
@@ -37,3 +30,52 @@ base_exp.py from pytorch_lightning.core import LightningModule
 ↓
 base_exp.py BEVDepthLightningModel→bev_depth_dinov3.py BEVDepthLightningModel→bev_depth_dinov3_metric3d.py BEVDepthLightningModel
 
+
+loss推移出力
+python scripts/plot_loss.py --logdir outputs/dinov3_metric3d_lift_mini_e24/lightning_logs/version_1 --out outputs/dinov3_metric3d_lift_mini_e24/loss_curve.png
+
+mAP出力
+python scripts/infer_eval.py --exp dinov3_metric3d --depth_prior_mode lift --ckpt "outputs/dinov3_metric3d_lift_mini_e24/lightning_logs/version_1/checkpoints/epoch=23-step=960.ckpt" --out outputs/dinov3_metric3d_lift_mini_e24/eval --version v1.0-mini --num_vis 10 --score_thr 0.3
+
+
+↓出力結果
+Results writes to outputs/dinov3_metric3d_lift_mini_e24/eval/results_nusc.json
+mAP: 0.0644
+mATE: 1.0053
+mASE: 0.6770
+mAOE: 1.1139
+mAVE: 1.0869
+mAAE: 0.6980
+NDS: 0.0947
+Eval time: 2.2s
+
+Per-class results:
+Object Class            AP      ATE     ASE     AOE     AVE     AAE
+car                     0.226   0.914   0.240   1.276   0.444   0.259
+truck                   0.108   0.787   0.423   0.867   0.270   0.160
+bus                     0.132   1.474   0.317   0.781   4.133   0.934
+trailer                 0.000   1.000   1.000   1.000   1.000   1.000
+construction_vehicle    0.000   1.000   1.000   1.000   1.000   1.000
+pedestrian              0.106   0.993   0.372   1.696   0.552   0.611
+motorcycle              0.073   0.885   0.417   1.405   0.296   0.621
+bicycle                 0.000   1.000   1.000   1.000   1.000   1.000
+traffic_cone            0.000   1.000   1.000   nan     nan     nan
+barrier                 0.000   1.000   1.000   1.000   nan     nan
+============================================================
+mAP=0.0644  NDS=0.0947
+  trans_err          1.0053
+  scale_err          0.6770
+  orient_err         1.1139
+  vel_err            1.0869
+  attr_err           0.6980
+per-class AP:
+  car                    0.2257
+  truck                  0.1083
+  bus                    0.1318
+  trailer                0.0000
+  construction_vehicle   0.0000
+  pedestrian             0.1059
+  motorcycle             0.0725
+  bicycle                0.0000
+  traffic_cone           0.0000
+  barrier                0.0000
